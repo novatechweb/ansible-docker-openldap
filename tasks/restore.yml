@@ -2,12 +2,25 @@
 # file: roles/docker-openldap/tasks/restore.yaml
 
 # *****************************************************************************
+# Setup the directory where the backup and restore is to take place
+
+- name: restore dir
+  file:
+    state: directory
+    path: '{{ openldap_docker_restore_dir }}'
+    owner: root
+    group: tape
+    mode: 'u=rwx,g=rwx,o=rx'
+    recurse: no
+    setype: svirt_sandbox_file_t
+
+# *****************************************************************************
 # Get data from tape
 
 - name: find files
   files_in_dir:
-    path: '{{ host_openldap_docker_restore_dir }}'
-  register: ldap_backup
+    path: '{{ openldap_docker_restore_dir }}'
+  register: openldap_backup
 
 - name: Get data-volume data from tape
   bacula:
@@ -16,11 +29,11 @@
     fileset: '{{ bacula_fileset }}'
     dest: '{{ bacula_dest }}'
     path_to_restore: '{{ openldap_docker_backup_dir }}'
-  when: ldap_backup.file_list == []
+  when: openldap_backup.file_list == []
 
 - name: Set permissions for data-volume data
   file:
-    path: '{{ host_openldap_docker_restore_dir }}/{{ item.ldif_file }}'
+    path: '{{ openldap_docker_restore_dir }}/{{ item.ldif_file }}'
     state: touch
     owner: root
     group: root
@@ -31,21 +44,35 @@
 # restore the openldap backup
 
 - name: stop container (ldap)
-  command: 'docker stop {{ openldap_container_name }}'
+  docker_container:
+    name: '{{ openldap_container_name }}'
+    state: stopped
 
 - name: load ldif files
-  command: 'docker run --rm --volumes-from {{ openldap_dv_name }} -v {{ host_openldap_docker_restore_dir }}:/tmp/import_export {{ openldap_image_name }}:{{ docker_image_tag }} apply_ldif -n {{ item.dbnum }} -l {{ item.ldif_file }}'
+  docker_container:
+    name: '{{ openldap_container_name }}-restore-{{ item.dbnum }}'
+    cleanup: true
+    command: ['apply_ldif', '-n', '{{ item.dbnum }}', '-l', '{{ item.ldif_file }}']
+    detach: false
+    image: '{{ openldap_image_name }}:{{ docker_image_tag }}'
+    volumes:
+    - '{{ openssl_dv_name }}:/etc/ssl/private:z'
+    - '{{ openldap_cv_name }}:/etc/ldap:z'
+    - '{{ openldap_dv_name }}:/var/lib/ldap:z'
+    - '{{ openldap_docker_restore_dir }}:/tmp/import_export:z'
   with_items: '{{ openldap_backup_files }}'
 
 - name: restart container (ldap)
-  command: 'docker start {{ openldap_container_name }}'
+  docker_container:
+    name: '{{ openldap_container_name }}'
+    state: started
 
 # *****************************************************************************
 # cleanup
 
 - name: Remove database backup file
   file:
-    path: '{{ host_openldap_docker_restore_dir }}'
+    path: '{{ openldap_docker_restore_dir }}'
     state: absent
 
 - name: State file
